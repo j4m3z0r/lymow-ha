@@ -1,0 +1,14 @@
+*.xapk
+lymow_extracted/
+lymow_java/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+scripts/.probe_tokens.json
+*.egg-info/
+dist/
+build/
+.claude/
+.playwright-mcp/

@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Lymow Robot Mower",
+        "description": "Enter your Lymow app credentials.",
+        "data": {
+          "username": "Email address",
+          "password": "Password",
+          "region": "Account region"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password",
+      "cannot_connect": "Cannot connect to Lymow cloud",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Account is already configured"
+    }
+  }
+}

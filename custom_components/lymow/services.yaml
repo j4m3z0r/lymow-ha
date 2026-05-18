@@ -1,0 +1,16 @@
+start_mowing:
+  name: Start mowing zones
+  description: Start mowing a specific sequence of zones in order.
+  fields:
+    zones:
+      name: Zones
+      description: >
+        Ordered list of zone names to mow. Names must match exactly as they
+        appear in the Mow zone select entity. The robot mows them in sequence.
+      required: true
+      example:
+        - Oak Grove
+        - Lower Orchard
+        - Upper Orchard
+      selector:
+        object:
