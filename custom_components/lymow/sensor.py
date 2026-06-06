@@ -7,7 +7,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import MATCH_ALL, PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -86,6 +86,10 @@ class LymowErrorSensor(_LymowSensorBase):
 
 class LymowMapSensor(_LymowSensorBase):
     _attr_name = "Map"
+    # Map geometry (zone polygons, channel points) is far larger than the
+    # recorder's 16 KiB attribute limit and only ever read from live state by
+    # the map card, so keep it out of the recorder database entirely.
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(self, coordinator: LymowCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "map")
