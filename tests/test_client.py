@@ -347,3 +347,75 @@ def test_map_sensor_attributes():
     assert attrs["zones"][0]["status"] == "active"
     assert attrs["zones"][1]["status"] == "unknown"
     assert attrs["zones"][0]["polygon"] == [[0.0, 0.0], [1.0, 0.0]]
+
+
+# ---------------------------------------------------------------------------
+# Connection health detection (request_map_refresh + interrupt callbacks)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_request_map_refresh_raises_when_connection_dead(client):
+    """A dead connection must raise so the coordinator's reconnect path runs.
+
+    Regression test: a failed publish sets _mqtt_connection = None; silently
+    returning here left the integration serving stale cached state forever.
+    """
+    from lymow_api.exceptions import LymowConnectionError
+    client._thing_name = "test-thing"
+    client._mqtt_connection = None
+    with pytest.raises(LymowConnectionError):
+        await client.request_map_refresh()
+
+
+@pytest.mark.asyncio
+async def test_request_map_refresh_noop_when_never_bound(client):
+    # No device bound yet (setup incomplete) — nothing to detect, no raise.
+    client._thing_name = None
+    client._mqtt_connection = None
+    await client.request_map_refresh()
+
+
+@pytest.mark.asyncio
+async def test_request_map_refresh_raises_after_unresumed_interruption(client):
+    import time as _time
+    from lymow_api.exceptions import LymowConnectionError
+    client._thing_name = "test-thing"
+    client._mqtt_connection = MagicMock()
+    client._last_map_refresh = _time.monotonic()  # map refresh not due
+    client._interrupted_at = _time.monotonic() - (client._INTERRUPT_GRACE + 1)
+    with pytest.raises(LymowConnectionError):
+        await client.request_map_refresh()
+
+
+@pytest.mark.asyncio
+async def test_request_map_refresh_tolerates_recent_interruption(client):
+    # Within the grace window awscrt may still auto-resume — don't tear down.
+    import time as _time
+    client._thing_name = "test-thing"
+    client._mqtt_connection = MagicMock()
+    client._last_map_refresh = _time.monotonic()
+    client._interrupted_at = _time.monotonic() - 1
+    await client.request_map_refresh()
+
+
+def test_interrupted_callback_records_time(client):
+    client._on_connection_interrupted(MagicMock(), "some awscrt error")
+    assert client._interrupted_at is not None
+
+
+def test_resumed_callback_clears_interruption_and_resubscribes(client):
+    import time as _time
+    client._interrupted_at = _time.monotonic()
+    loop = MagicMock()
+    client._loop = loop
+    client._on_connection_resumed(MagicMock(), 0, False)
+    assert client._interrupted_at is None
+    # clean_session=True → session_present is False → must resubscribe
+    loop.call_soon_threadsafe.assert_called_once()
+
+
+def test_resumed_callback_skips_resubscribe_when_session_present(client):
+    loop = MagicMock()
+    client._loop = loop
+    client._on_connection_resumed(MagicMock(), 0, True)
+    loop.call_soon_threadsafe.assert_not_called()

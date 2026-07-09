@@ -62,6 +62,7 @@ class LymowClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._state_listener: Callable | None = None  # called (thread-safe) on state updates
         self._last_map_refresh: float = 0.0  # monotonic time of last QUERY_MAP sent
+        self._interrupted_at: float | None = None  # monotonic time of unresumed interruption
 
     # ------------------------------------------------------------------
     # Auth
@@ -298,14 +299,47 @@ class LymowClient:
             client_id=f"lymow-ha-{uuid.uuid4()}",
             clean_session=True,
             keep_alive_secs=30,
+            on_connection_interrupted=self._on_connection_interrupted,
+            on_connection_resumed=self._on_connection_resumed,
         )
 
         connect_future = self._mqtt_connection.connect()
         connect_future.result(timeout=15)
+        self._interrupted_at = None
         _LOGGER.debug("MQTT connected to %s", self._region.iot_endpoint)
 
         if self._thing_name:
             self._subscribe_sync()
+
+    def _on_connection_interrupted(self, connection, error, **kwargs) -> None:
+        """awscrt callback: the websocket dropped. The SDK auto-retries, but it
+        re-signs with the same static (possibly expired) Cognito credentials, so
+        a resume is never guaranteed — record when the drop happened so
+        request_map_refresh() can escalate to a full re-auth reconnect."""
+        _LOGGER.warning("MQTT connection interrupted: %r", error)
+        if self._interrupted_at is None:
+            self._interrupted_at = time.monotonic()
+
+    def _on_connection_resumed(self, connection, return_code, session_present, **kwargs) -> None:
+        _LOGGER.warning(
+            "MQTT connection resumed (return_code=%s session_present=%s)",
+            return_code, session_present,
+        )
+        self._interrupted_at = None
+        # clean_session=True → a resumed connection has no subscriptions; without
+        # this, state updates silently stop while publishes keep succeeding.
+        # _subscribe_sync blocks on SUBACKs, so run it off this callback thread.
+        loop = self._loop
+        if not session_present and loop:
+            loop.call_soon_threadsafe(
+                lambda: loop.run_in_executor(None, self._resubscribe_after_resume)
+            )
+
+    def _resubscribe_after_resume(self) -> None:
+        try:
+            self._subscribe_sync()
+        except Exception as exc:
+            _LOGGER.warning("Resubscribe after resume failed: %r", exc)
 
     def _on_notify_message(self, topic: str, payload: bytes, **_kwargs) -> None:
         """Log everything received on notify-app for protocol discovery."""
@@ -369,9 +403,11 @@ class LymowClient:
             )
             pub_future.result(timeout=10)
         except Exception as exc:
-            # Mark connection as dead so reconnect is attempted on next call
+            # Mark connection as dead so reconnect is attempted on next call.
+            # %r, not %s: several failure modes (TimeoutError, CancelledError)
+            # stringify to "" and previously left the log unactionable.
             self._mqtt_connection = None
-            raise LymowConnectionError(f"MQTT publish failed: {exc}") from exc
+            raise LymowConnectionError(f"MQTT publish failed: {exc!r}") from exc
 
     async def connect(self, thing_name: str) -> None:
         self._thing_name = thing_name
@@ -429,11 +465,30 @@ class LymowClient:
     # ------------------------------------------------------------------
 
     _MAP_REFRESH_INTERVAL = 3600  # hourly fallback
+    _INTERRUPT_GRACE = 60  # seconds to let awscrt auto-resume before full reconnect
 
     async def request_map_refresh(self) -> None:
-        """Send QUERY_MAP if the hourly fallback interval has elapsed."""
-        if not self._mqtt_connection or not self._thing_name:
+        """Send QUERY_MAP if the hourly fallback interval has elapsed.
+
+        Doubles as the coordinator's connection health check: raises
+        LymowConnectionError when the connection is dead (marked None by a
+        failed publish) or interrupted past the resume grace window, so the
+        coordinator's re-auth reconnect path runs. Silently returning on a
+        dead connection is what once left entities serving stale state
+        indefinitely.
+        """
+        if not self._thing_name:
             return
+        if not self._mqtt_connection:
+            raise LymowConnectionError("Not connected or no device bound")
+        if (
+            self._interrupted_at is not None
+            and time.monotonic() - self._interrupted_at > self._INTERRUPT_GRACE
+        ):
+            raise LymowConnectionError(
+                f"Connection interrupted {time.monotonic() - self._interrupted_at:.0f}s ago "
+                "and not resumed"
+            )
         if time.monotonic() - self._last_map_refresh >= self._MAP_REFRESH_INTERVAL:
             await self._publish(encode_query_map())
             self._last_map_refresh = time.monotonic()
