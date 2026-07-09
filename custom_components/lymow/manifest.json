@@ -1,7 +1,7 @@
 {
   "domain": "lymow",
   "name": "Lymow Robot Mower",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "config_flow": true,
   "documentation": "https://github.com/j4m3z0r/lymow-ha",
   "issue_tracker": "https://github.com/j4m3z0r/lymow-ha/issues",
