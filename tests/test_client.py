@@ -216,19 +216,21 @@ def test_decode_pb_map_with_polygon():
     from lymow_api.proto import (
         decode_pb_map, _field_bytes, _field_varint, _tag,
         _PBMAP_GO_ZONES, _PBZONE_BASIC_INFO, _PBZONE_BASIC_NAME, _PBZONE_BASIC_HASH_ID,
+        _PBZONE_BASIC_POLYGON,
     )
 
     def _field_float32(field: int, value: float) -> bytes:
         return _tag(field, 5) + struct.pack('<f', value)
 
-    # Encode a single polygon point at (1.5, 2.5): field 1 + field 2, wire type 5
+    # Encode a single polygon point at (1.5, 2.5): field 1 + field 2, wire type 5.
+    # The polygon container holds repeated field-1 (LEN) submessages, one per point.
     point = _field_float32(1, 1.5) + _field_float32(2, 2.5)
 
-    # PbZoneBasicInfo: name, hash_id, polygon point (field 5)
+    # PbZoneBasicInfo: name, hash_id, polygon (field 5 wrapping the point submessage)
     basic_info = (
         _field_bytes(_PBZONE_BASIC_NAME, b"TestZone")
         + _field_bytes(_PBZONE_BASIC_HASH_ID, b"abc123")
-        + _field_bytes(5, point)   # field 5 = polygon points
+        + _field_bytes(_PBZONE_BASIC_POLYGON, _field_bytes(1, point))
     )
 
     # PbZone wrapping basic_info in field 1
@@ -259,9 +261,11 @@ def test_decode_pb_map_incomplete_point_is_dropped():
     def _field_float32(field, value):
         return _tag(field, 5) + struct.pack('<f', value)
 
-    # Only field 1 (x), no field 2 (y)
+    # Only field 1 (x), no field 2 (y), wrapped in the per-point field-1 submessage
     point = _field_float32(1, 9.9)
-    basic_info = _field_bytes(_PBZONE_BASIC_NAME, b"NoY") + _field_bytes(_PBZONE_BASIC_POLYGON, point)
+    basic_info = _field_bytes(_PBZONE_BASIC_NAME, b"NoY") + _field_bytes(
+        _PBZONE_BASIC_POLYGON, _field_bytes(1, point)
+    )
     zone_msg = _field_bytes(_PBZONE_BASIC_INFO, basic_info)
     pb_map = _field_bytes(_PBMAP_GO_ZONES, zone_msg)
 
@@ -270,17 +274,18 @@ def test_decode_pb_map_incomplete_point_is_dropped():
 
 
 def test_decode_position():
-    """Mower position is parsed from PbOutput field 6 (localizationInfo)."""
+    """Mower position is parsed from PbOutput field 14 (PbAlgoLoc, map frame)."""
     import struct
-    from lymow_api.proto import decode_pb_output, _field_bytes, _tag
+    from lymow_api.proto import (
+        decode_pb_output, _field_bytes, _tag,
+        _PBOUTPUT_ALGO_LOC, _ALGOLOC_X, _ALGOLOC_Y,
+    )
 
     def _field_float32(field: int, value: float) -> bytes:
         return _tag(field, 5) + struct.pack('<f', value)
 
-    # localizationInfo submessage: field 2 = x, field 3 = y, both wire type 5
-    loc_info = _field_float32(2, 3.75) + _field_float32(3, -1.25)
-    # Wrap in PbOutput field 6
-    pb_output = _field_bytes(6, loc_info)
+    algo_loc = _field_float32(_ALGOLOC_X, 3.75) + _field_float32(_ALGOLOC_Y, -1.25)
+    pb_output = _field_bytes(_PBOUTPUT_ALGO_LOC, algo_loc)
     payload = base64.b64encode(pb_output).decode()
 
     result = decode_pb_output(payload)
@@ -291,15 +296,17 @@ def test_decode_position():
 
 
 def test_decode_position_partial_is_dropped():
-    """A localizationInfo with only x (no y) must leave position as None."""
+    """A PbAlgoLoc with only x (no y) must leave position as None."""
     import struct
-    from lymow_api.proto import decode_pb_output, _field_bytes, _tag
+    from lymow_api.proto import (
+        decode_pb_output, _field_bytes, _tag, _PBOUTPUT_ALGO_LOC, _ALGOLOC_X,
+    )
 
     def _field_float32(field: int, value: float) -> bytes:
         return _tag(field, 5) + struct.pack('<f', value)
 
-    loc_info = _field_float32(2, 3.75)   # x only, no y
-    pb_output = _field_bytes(6, loc_info)
+    algo_loc = _field_float32(_ALGOLOC_X, 3.75)   # x only, no y
+    pb_output = _field_bytes(_PBOUTPUT_ALGO_LOC, algo_loc)
     payload = base64.b64encode(pb_output).decode()
 
     result = decode_pb_output(payload)
@@ -318,6 +325,7 @@ def test_map_sensor_attributes():
             Zone(hash_id="abc", name="Oak Grove", zone_type="go", polygon=[(0.0, 0.0), (1.0, 0.0)]),
             Zone(hash_id="def", name="", zone_type="nogo", polygon=[(5.0, 5.0)]),
         ],
+        channels=[],
         zone_statuses={"abc": ZoneStatus.ACTIVE},
     )
 
